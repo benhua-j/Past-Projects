@@ -1,0 +1,232 @@
+% Author: Benjamin Hua-Johnston
+% Date: 28052019
+% Brief: Uses small signal analysis theory to calculate the differential 
+%        and common mode gains for both a balanced and single ended
+%        output differential pair
+
+clc;
+close all;
+%% Known Values
+V_cc_pos = 12;
+V_cc_neg = -12;
+ALD_1116_trans = 1.8e-3; %Forward Transconductance - ALD1116
+ALD_1116_trans_current = 10e-3; %Test Current used for transconductance
+ALD_1116_Vto = 0.7; % Typical Gate Threshold Voltage
+
+%% Known equations
+syms K V_gs I_dq V_to Z_incm Z_ind A_vdb A_vcm Z_out gm R_d R_degen R_ss CMRR
+
+eqn1 = K * (V_gs - V_to)^2 == I_dq; % General equation for MOSFETS
+eqn2 = 2 * sqrt(K * I_dq) == gm; % transconductance gain
+eqn3 = A_vdb == (-gm * R_d)/(eqn1 = K * (V_gs - V_to)^2 == I_dq1 + gm * R_degen); % Differential mode Gain - CHECK FOR 2
+eqn4 = A_vcm == (-gm * R_d)/(gm * (R_degen + (2 * R_ss)) + 1); % Common mode Gain
+eqn5 = CMRR == 20*log10(abs(A_vdb / A_vcm));
+
+%% Current Source (Widlar - Simple)
+
+% Settings ----------------------------------------------------------------
+% Set one value, leave the other at 0
+I_ss = 0.5e-3; %Amps
+R_set = 0; %Ohms
+
+% Current source Calculation ----------------------------------------------
+if ((I_ss <= 0 && R_set <= 0) || (I_ss > 0 && R_set > 0))
+    error("ERROR: Read line 19 you idiot");
+elseif (R_set > 0)
+    I_ss = (V_cc_pos - V_cc_neg)/R_set;
+else
+    R_set = (V_cc_pos - V_cc_neg)/I_ss;
+end
+fprintf("Source current set to: %f mA, with a %dkohm resistor\n\n", ... 
+        I_ss * 1000, round(R_set/1000));
+    
+%% Solve for K (datasheet values)
+
+solx = subs(eqn2, [gm I_dq], [ALD_1116_trans ALD_1116_trans_current]);
+K_sol = vpa(solve(solx, K)); % solve for K from datasheet
+
+%% First Stage - Differential Amplifier (Balanced Output)
+
+% Using the calculated I_ss value for the current source
+% Note that the input impedance of the current source needs to be redone
+% if changing this from above
+I_ss_1 = I_ss; %Amps 
+
+% Settings ----------------------------------------------------------------
+R_degen_sol_1 = 0; % Set value for degen resistors
+R_ss_sol_1 = 160e3; % Set the impedance of the current source (experimental calculation)
+R_d_sol_1 = 0; % Leave at 0 for the proper calculation, modify to experiment with higher gains
+
+% DC Analysis (Grounded inputs)--------------------------------------------
+%To find V_d, we need to find V_s, which we can find from V_gs = Vg - Vs
+%where Vg is ground
+solx  = subs(eqn1, [K V_to I_dq], [K_sol ALD_1116_Vto I_ss_1/2]);
+V_gs_sol_1 = vpa(solve(solx, V_gs));
+V_gs_sol_1 = V_gs_sol_1(V_gs_sol_1 > 0); % Select the positive root number
+
+%Not true, can use a better method using Vcc and V_s
+%V_ds_Q_point_1 = V_cc_pos/2; % Vds Q point, typically half of Vcc
+V_ds_Q_point_1 = (V_cc_pos - (0 - V_gs_sol_1))/2;
+
+%To find V_d, we need to find V_s, which we can find from V_gs = Vg - Vs
+%where Vg is ground
+solx  = subs(eqn1, [K V_to I_dq], [K_sol ALD_1116_Vto I_ss_1/2]);
+V_gs_sol_1 = vpa(solve(solx, V_gs));
+V_gs_sol_1 = V_gs_sol_1(V_gs_sol_1 > 0); % Select the positive root number
+
+%As Vg is 0, we know Vs and V_ds, we can find V_d
+V_d_sol_1 = vpa(V_ds_Q_point_1 + (0 - V_gs_sol_1), 4);
+
+%To set V_d, R_d must be calculated to satisfy this requirement
+if (R_d_sol_1 == 0)
+    R_d_sol_1 = (V_cc_pos - V_d_sol_1)/(I_ss_1/2);
+else 
+    V_d_sol_1 = V_cc_pos - (R_d_sol_1 * I_ss_1/2);
+end
+
+% AC Analsysis-------------------------------------------------------------
+% Solve for gm using our biased I_dq
+solx = subs(eqn2, [K I_dq], [K_sol, I_ss_1/2]);
+gm_sol_1 = solve(solx, gm);
+
+%Differential Mode Gain
+solx = subs(eqn3, [gm R_d R_degen], [gm_sol_1 R_d_sol_1 R_degen_sol_1]);
+A_vdb_sol_1 = solve(solx, A_vdb) * 2; % CHECK THIS
+
+%Common Mode Gain
+solx = subs(eqn4, [gm R_d R_degen R_ss], [gm_sol_1 R_d_sol_1 R_degen_sol_1 R_ss_sol_1]);
+A_vcm_sol_1 = solve(solx, A_vcm);
+
+%CMRR
+solx = subs(eqn5, [A_vcm A_vdb], [A_vcm_sol_1 A_vdb_sol_1]);
+CMRR_sol_1 = solve(solx, CMRR);
+
+%Display
+fprintf("First Stage -----------------------------------------------------\n");
+fprintf(['For an initial stage drain resistor value of %f kOhms:\n', ...
+        'A_vcm = %f\n', ...
+        'A_vdb = %f\n', ...
+        'CMRR = %f dB\n', ...
+        'Z_incm = infinity\n', ...
+        'Z_indb = infinity\n', ...
+        'Z_out = %f kOhms\n', ...
+        'Voltage swings around: %f V\n\n'], R_d_sol_1/1000, A_vcm_sol_1, ...
+             A_vdb_sol_1, CMRR_sol_1, R_d_sol_1 * 2/1000, V_d_sol_1)  
+
+%% Second Stage - Differential Amplifier (Single ended Output)
+
+% Settings ----------------------------------------------------------------
+% Probably just use the same as the first stage
+
+% Using the calculated I_ss value for the current source
+% Note that the input impedance of the current source needs to be redone
+% if the widlar current changes
+I_ss_2 = I_ss; %Amps 
+
+R_degen_sol_2 = 0;
+R_ss_sol_2 = 160e3; % Input Impedance of current source
+R_d_sol_2 = 0; %Again leave at 0 for ideal calculation
+
+
+%NOTE! - The V_ds_Q points cannot be used here from stage 1 as 
+%cutoffs will occur at
+%large gains - V_ds > Vgs - Vto. The input from stage 1 will modify the
+%cutoff conditions - Recalculate based on stage1 swing voltage:
+
+
+% DC Analysis -------------------------------------------------------------
+
+%To find V_d, we need to find V_s, which we can find from V_gs = Vg - Vs
+%where Vg is ground
+solx  = subs(eqn1, [K V_to I_dq], [K_sol ALD_1116_Vto I_ss_1/2]);
+V_gs_sol_2 = vpa(solve(solx, V_gs));
+V_gs_sol_2 = V_gs_sol_2(V_gs_sol_2 > 0);
+
+V_ds_Q_point_2 = (V_cc_pos - (V_d_sol_1 - V_gs_sol_2))/2; % Need to consider the output of stage 1
+
+% Find V_d
+V_d_sol_2 = vpa(V_ds_Q_point_2 + (V_d_sol_1 - V_gs_sol_2), 4);
+
+% To set V_d, redo the R_d calculation
+if (R_d_sol_2 == 0)
+    R_d_sol_2 = (V_cc_pos - V_d_sol_2)/(I_ss_2/2); %Reuse from first stage
+else
+    V_d_sol_2 = V_cc_pos - (R_d_sol_2 * I_ss_2/2);
+end
+
+% AC Analsysis ------------------------------------------------------------
+% Solve for gm using our biased I_dq
+solx = subs(eqn2, [K I_dq], [K_sol, I_ss_2/2]);
+gm_sol_2 = solve(solx, gm);
+
+%Differential Mode Gainhttps://manjaro.org/
+solx = subs(eqn3, [gm R_d R_degen], [gm_sol_2 R_d_sol_2 R_degen_sol_2]);
+A_vdb_sol_2 = solve(solx, A_vdb);
+
+%Common Mode Gain
+solx = subs(eqn4, [gm R_d R_degen R_ss], [gm_sol_2 R_d_sol_2 R_degen_sol_2 R_ss_sol_2]);
+A_vcm_sol_2 = solve(solx, A_vcm);
+
+%CMRR
+solx = subs(eqn5, [A_vcm A_vdb], [A_vcm_sol_2 A_vdb_sol_2]);
+CMRR_sol_2 = solve(solx, CMRR);
+
+fprintf("Second Stage ----- ----------------------------------------------\n");
+fprintf(['For a second stage drain resistor value of %f kOhms:\n', ...
+        'A_vcm = %f\n', ...
+        'A_vdb = %f\n', ...
+        'CMRR = %f dB\n', ...
+        'Z_incm = infinity\n', ...
+        'Z_indb = infinity\n', ...
+        'Z_out = %f kOhms\n', ...
+        'Voltage swings around: %f V\n\n'], R_d_sol_2/1000, A_vcm_sol_2, ...
+             A_vdb_sol_2, CMRR_sol_2, R_d_sol_2 / 1000, V_d_sol_2)  
+
+%% First and Second stage cascaded
+
+% Note that given the infinite input impedance, voltage dividers do not need
+% to be calculated, hence just multiply the gains_sol_2 + V_cmo
+
+A_vcm_sol_total = A_vcm_sol_1 * A_vcm_sol_2;
+A_vdb_sol_total = A_vdb_sol_1 * A_vdb_sol_2;
+
+% Total CMRR achieved
+solx = subs(eqn5, [A_vcm A_vdb], [A_vcm_sol_total A_vdb_sol_total]);
+CMRR_sol_total = solve(solx, CMRR);
+
+fprintf("Overall ----- ---------------------------------------------------\n");
+fprintf(['Cascading the first and second stages, final values are:\n', ...
+        'A_vcm = %f\n', ...
+        'A_vdb = %f\n', ...
+        'CMRR = %f dB\n', ...
+        'Z_in = infinity\n', ...
+        'Z_out = %f kOhms\n\n'], ...
+        A_vcm_sol_total, A_vdb_sol_total, CMRR_sol_total, R_d_sol_2 / 1000)
+        
+%% Example Calculation
+% Voltage Inputs
+V_i1 = 0.01;
+V_i2 = -0.01;
+
+% Differential and Common voltage calculation
+V_id = V_i1 - V_i2;
+V_cm = (V_i1 + V_i2)/2;
+
+% Gain calculation
+V_dmo = A_vdb_sol_total * V_id;
+V_cmo = A_vcm_sol_total * V_cm;
+
+% DC offset (Common mode and Q point)
+V_dc = V_d_sol_2 + V_cmo;
+
+V_out_max = V_dc + V_dmo;
+V_out_min = V_dc - V_dmo;
+
+fprintf("Example Calculation--------------------------------------------\n");
+fprintf(['For a purely differential input signal of 0.01V: \n', ...
+        'Differential Voltage is %f\n', ...
+        'Common Mode Voltage is %f \n', ...
+        'Voltage peaks at %fV\n', ...
+        'Voltage trough at %fV\n', ...
+        'Voltage swings around %fV\n'], V_dmo, V_cmo, V_out_max, V_out_min, V_dc);
+        
